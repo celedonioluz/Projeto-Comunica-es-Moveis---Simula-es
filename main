@@ -1,0 +1,465 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import random
+import matplotlib.ticker as mticker
+
+# ==============================
+# Definição de parâmetros
+# ==============================
+fc = 3  # frequência em GHz
+op = 1  # fixo para UMi NLOS
+
+# ==============================
+# Parâmetros por cenário + KR
+# ==============================
+if op == 1:  # UMi NLOS
+    mu_st = -0.24 * np.log10(1 + fc) - 6.83
+    sigma = -0.16 * np.log10(1 + fc) + 0.28
+    r_tau = 2.1
+    sigma_xi = 7.82
+    KR_dB = 0
+    mu_theta = -0.08 * np.log10(1 + fc) + 1.81
+    sigma_theta = 0.05 * np.log10(1 + fc) + 0.3
+    mu_phi = -0.04 * np.log10(1 + fc) + 0.92
+    sigma_phi = -0.07 * np.log10(1 + fc) + 0.41
+
+KR_linear = 10 ** (KR_dB / 10) if KR_dB != 0 else 0
+print(f"KR (dB): {KR_dB:.3f} dB  -> KR (linear): {KR_linear}")
+
+# ==============================
+# Espalhamento do atraso
+# ==============================
+st_log = np.random.normal(mu_st, sigma, 1)
+st_linear = 10 ** st_log
+# Correção: multiplicar por 1e6 para converter para µs
+print(f"Espalhamento do atraso (στ linear): {st_linear[0]:.4e} s  -> {st_linear[0]*1e6:.4f} µs")
+
+# ==============================
+# Gráfico TR 38.901: σ_τ médio vs frequência portadora
+# ==============================
+fc_range = np.linspace(0.5, 100, 200)  # GHz
+st_values = []
+
+for fc_tmp in fc_range:
+    mu_st_tmp = -0.24 * np.log10(1 + fc_tmp) - 6.83
+    st_linear_tmp = 10 ** mu_st_tmp
+    st_values.append(st_linear_tmp)
+
+st_values = np.array(st_values) * 1e6  # µs
+
+plt.figure(figsize=(9, 5))
+plt.plot(fc_range, st_values, "r-", lw=2, label="UMi-NLOS")
+plt.xlabel("Frequência da portadora f_c (GHz)")
+plt.ylabel("σ_τ médio (µs)")
+plt.title("σ_τ vs f_c conforme 3GPP TR 38.901")
+plt.yscale("log")
+plt.grid(True, which="both", linestyle="--", alpha=0.7)
+plt.legend()
+xticks = list(plt.xticks()[0])
+if 0.5 not in xticks:
+    xticks.append(0.5)
+if 10 not in xticks:
+    xticks.append(10)
+xticks = sorted([x for x in xticks if x > 0])
+plt.xticks(xticks, rotation=0)
+plt.show()
+
+# ==============================
+# Média dos atrasos multipercurso
+# ==============================
+mu_tau = r_tau * st_linear
+M = 100  # número de amostras
+
+# ==============================
+# Geração dos atrasos exponenciais
+# ==============================
+tau = np.random.exponential(mu_tau, M)
+tau_sorted_desc = np.sort(tau)[::-1]
+tau_us_desc = tau_sorted_desc * 1e6
+
+plt.figure(figsize=(8, 5))
+counts, bins, patches = plt.hist(tau_us_desc, bins=30, density=True,
+                                 alpha=0.6, color="blue", edgecolor="black", label="Histograma")
+x_vals = np.linspace(0, max(tau_us_desc), 200)
+pdf = (1 / (mu_tau[0] * 1e6)) * np.exp(-x_vals / (mu_tau[0] * 1e6))
+plt.plot(x_vals, pdf, "r-", linewidth=2, label="Distribuição teórica")
+plt.xlabel("Atraso (µs)")
+plt.ylabel("Distribuição (densidade)")
+plt.title("Distribuição dos atrasos multipercurso")
+plt.legend()
+plt.grid(True, linestyle="--", alpha=0.7)
+plt.show()
+
+# ==============================
+# Ordena τ para PDP
+# ==============================
+order = np.argsort(tau)
+tau = tau[order]
+tau_us = tau * 1e6
+xi = np.random.normal(0, sigma_xi, M)
+xi = xi[order]
+
+alpha2_pre = np.exp(-tau * ((r_tau - 1) / (r_tau * st_linear))) * 10 ** (-xi / 10)
+
+Omega_c = np.sum(alpha2_pre[1:])
+
+# CORREÇÃO: Para cenário NLOS (KR_dB = 0), usar apenas os componentes NLOS
+if KR_linear == 0:
+    # Cenário NLOS - não há componente LOS
+    alpha2 = alpha2_pre / np.sum(alpha2_pre)  # Normaliza para soma = 1
+else:
+    # Cenário LOS - incluir componente LOS
+    alpha2 = np.zeros_like(alpha2_pre)
+    alpha2[0] = KR_linear / (KR_linear + 1)
+    nlos_total = 1.0 / (KR_linear + 1)
+    if Omega_c <= 0:
+        alpha2[1:] = nlos_total / (M - 1)
+    else:
+        alpha2[1:] = (alpha2_pre[1:] / Omega_c) * nlos_total
+
+# Ajuste de resíduo para garantir soma = 1
+resid = 1.0 - np.sum(alpha2)
+if abs(resid) > 1e-12:
+    if np.sum(alpha2[1:]) > 0:
+        alpha2[1:] += resid * (alpha2[1:] / np.sum(alpha2[1:]))
+    else:
+        alpha2[0] += resid
+
+print(f"Soma das potências alpha2 (deve ser 1.0): {np.sum(alpha2):.12f}")
+
+# ==============================
+# CÁLCULO DO KR (linear, normalizado) e KR (dB, normalizado) - COM PROTEÇÃO
+# ==============================
+eps = 1e-12
+
+# Cálculo do KR a partir das potências normalizadas
+if KR_linear == 0:
+    # Para NLOS, KR deve ser 0 (ou muito pequeno)
+    KR_calc = 0.0
+    KR_calc_db = -np.inf  # ou um valor muito negativo
+else:
+    KR_calc = alpha2[0] / max(np.sum(alpha2[1:]), eps)
+    KR_calc_db = 10 * np.log10(max(KR_calc, eps))  # Proteção contra log(0)
+
+print(f"KR (linear, normalizado): {KR_calc:.6f}")
+if KR_calc > 0:
+    print(f"KR (dB, normalizado)    : {KR_calc_db:.3f} dB")
+else:
+    print(f"KR (dB, normalizado)    : -∞ dB (NLOS)")
+
+# Cálculo do KR (a partir das potências preliminares, sem normalização)
+KR_calc_pre = alpha2_pre[0] / max(np.sum(alpha2_pre[1:]), eps)
+if KR_calc_pre > 0:
+    KR_calc_pre_db = 10 * np.log10(KR_calc_pre)
+    print(f"KR (linear) a partir de alpha2_pre: {KR_calc_pre:.6f}  -> KR (dB): {KR_calc_pre_db:.3f} dB")
+else:
+    print(f"KR (linear) a partir de alpha2_pre: {KR_calc_pre:.6f}  -> KR (dB): -∞ dB")
+
+# ==============================
+# Cálculo do atraso médio e σ_τ
+# ==============================
+tau_bar = np.sum(tau * alpha2)
+sigma_tau = np.sqrt(np.sum(alpha2 * (tau - tau_bar) ** 2))
+print(f"Atraso médio τ̄ = {tau_bar * 1e6:.4f} µs")
+print(f"Espalhamento de atraso σ_τ = {sigma_tau * 1e6:.4f} µs")
+
+# ==============================
+# Gráfico 2 - PDP log (estilo TR 38.901 com setas ▲)
+# ==============================
+plt.figure(figsize=(9, 5))
+plt.title("Perfil de Atraso de Potência (PDP)")
+plt.xlabel("Domínio de Atraso τ [µs]")
+plt.ylabel("PDP (Potência Normalizada α²n)")
+plt.yscale("log")
+
+baseline = 1e-8  # mesmo limite inferior da escala
+plt.ylim([baseline, 1])
+
+# Hastes + triângulo no topo
+for d, p in zip(tau_us, alpha2):
+    # linha vertical
+    plt.plot([d, d], [baseline, p], color="black", lw=1)
+    # marcador triangular no topo
+    plt.plot(d, p, marker='^', markersize=6,
+             markeredgecolor='k', markerfacecolor='k')
+
+plt.grid(True, which="both", linestyle="--", alpha=0.7)
+plt.show()
+
+
+
+# ==============================
+# Espalhamento angular azimutal
+# ==============================
+sigma_theta_log = np.random.normal(mu_theta, sigma_theta, 1)
+sigma_theta_dg = 10 ** sigma_theta_log
+sigma_theta_rad = sigma_theta_dg * np.pi / 180
+alpha2_max = np.max(alpha2)
+epsilon = 1e-12
+
+theta_p_n = 1.42 * sigma_theta_rad * np.sqrt(-np.log(np.maximum(alpha2 / alpha2_max, epsilon)))
+theta_p_n[0] = 0.0
+U = random.choices([-1, 1], k=M)
+Y = np.random.normal(0, sigma_theta_rad / 7, M)
+theta_n = np.array(U) * theta_p_n + Y
+theta_n_deg = theta_n * 180 / np.pi
+
+plt.figure(figsize=(9, 5))
+plt.title("Espectro Angular - Potência vs Ângulo de Chegada")
+plt.xlabel("Ângulo θn [graus]")
+plt.ylabel("Potência α²n (log)")
+plt.yscale("log")
+for ang, p in zip(theta_n_deg, alpha2):
+    plt.stem([ang], [p], linefmt="k-", markerfmt="ko", basefmt=" ")
+plt.grid(True, linestyle="--", alpha=0.7)
+plt.show()
+
+# Gráfico do círculo angular azimutal
+plt.figure(figsize=(6, 6))
+ax = plt.subplot(111, polar=True)
+theta_n_rad = np.deg2rad(theta_n_deg)
+ax.set_rscale("log")
+for ang, p in zip(theta_n_rad, alpha2):
+    ax.plot([0, ang], [1e-8, p], color="k")
+    ax.plot(ang, p, marker="o", markersize=6, markerfacecolor="white", markeredgecolor="k")
+ax.set_title("Círculo Angular - Ângulo Azimutal")
+plt.show()
+
+# ==============================
+# Espalhamento angular elevação
+# ==============================
+sigma_phi_log = np.random.normal(mu_phi, sigma_phi, 1)
+sigma_phi_dg = 10 ** sigma_phi_log
+sigma_phi_rad = sigma_phi_dg * np.pi / 180
+phi_prime_n = - sigma_phi_rad * np.log(np.maximum(alpha2 / alpha2_max, epsilon))
+Y_phi = np.random.normal(0, sigma_phi_rad / 7, M)
+phi_bar = np.pi / 4
+phi_n = np.array(U) * phi_prime_n + Y_phi
+phi_n_deg = phi_n * 180 / np.pi
+
+plt.figure(figsize=(9, 5))
+plt.title("Espectro Angular em Elevação (Potência vs Ângulo de Elevação)")
+plt.xlabel("Ângulo de Elevação ϕn [graus]")
+plt.ylabel("Potência α²n (escala log)")
+plt.yscale("log")
+for ang, p in zip(phi_n_deg, alpha2):
+    plt.stem([ang], [p], linefmt="k-", markerfmt="ko", basefmt=" ")
+plt.grid(True, linestyle="--", alpha=0.7)
+plt.show()
+
+# Gráfico do círculo angular elevação
+plt.figure(figsize=(6, 6))
+ax2 = plt.subplot(111, polar=True)
+phi_n_rad = np.deg2rad(phi_n_deg)
+ax2.set_rscale("log")
+for ang, p in zip(phi_n_rad, alpha2):
+    ax2.plot([0, ang], [1e-8, p], color="k")
+    ax2.plot(ang, p, marker="o", markersize=6, markerfacecolor="white", markeredgecolor="k")
+ax2.set_title("Círculo Angular - Ângulo de Elevação")
+plt.show()
+
+# ==============================
+# DIREÇÕES DE CHEGADA (rn)
+# ==============================
+rn = np.zeros((M, 3))
+rn[:, 0] = np.cos(theta_n) * np.sin(phi_n)
+rn[:, 1] = np.sin(theta_n) * np.sin(phi_n)
+rn[:, 2] = np.cos(phi_n)
+
+from mpl_toolkits.mplot3d import Axes3D
+
+fig = plt.figure(figsize=(7, 7))
+ax = fig.add_subplot(111, projection='3d')
+ax.scatter(rn[:, 0], rn[:, 1], rn[:, 2], c='k', marker='o')
+for i in range(M):
+    ax.plot([0, rn[i, 0]], [0, rn[i, 1]], [0, rn[i, 2]], 'k-', alpha=0.5)
+imax = np.argmax(alpha2)
+ax.scatter(rn[imax, 0], rn[imax, 1], rn[imax, 2], c='b', marker='o', s=100)
+ax.plot([0, rn[imax, 0]], [0, rn[imax, 1]], [0, rn[imax, 2]], 'b-', linewidth=2)
+ax.set_xlabel('X')
+ax.set_ylabel('Y')
+ax.set_zlabel('Z')
+ax.set_title('Direções de Chegada rn com Retas da Origem')
+plt.show()
+
+# ==============================
+# DESVIO DOPPLER
+# ==============================
+lambda_c = 3e8 / (fc * 1e9)
+theta_v = np.deg2rad(45)
+phi_v = np.deg2rad(90)
+
+for vrx_scalar in [5, 50]:
+    Vrx = vrx_scalar * np.array([np.cos(theta_v) * np.sin(phi_v),
+                                 np.sin(theta_v) * np.sin(phi_v),
+                                 np.cos(phi_v)])
+    nu_n = (1 / lambda_c) * np.dot(rn, Vrx)
+    plt.figure(figsize=(9, 5))
+    plt.stem(nu_n, alpha2, linefmt="k-", markerfmt="ko", basefmt=" ")
+    plt.title(f"Espectro Doppler (vrx={vrx_scalar} m/s)")
+    plt.xlabel("Desvio Doppler νn [Hz]")
+    plt.ylabel("Potência α²n (escala log)")
+    plt.yscale("log")
+    plt.ylim([1e-8, 1])
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.show()
+
+# ==============================
+# GERAÇÃO DOS SINAIS TRANSMITIDO E RECEBIDO
+# ==============================
+
+# Gerar amplitudes reais para os caminhos (sem fase aleatória)
+alpha_n = np.sqrt(alpha2)
+
+fc_hz = fc * 1e9
+
+def generate_transmitted(delay, dt, Nt):
+    t_max = 5 * dt
+    t = np.linspace(0, t_max, Nt)
+    s = np.zeros_like(t)
+    s[(t >= delay) & (t < delay + dt)] = 1.0
+    return t, s
+
+dts = [1e-7, 1e-5, 1e-3]
+
+for dt in dts:
+    t, s_tx = generate_transmitted(0, dt, 100000)
+    r_t = np.zeros_like(t, dtype=complex)
+    for n in range(M):
+        tau_n = tau[n]
+        nu_n_val = nu_n[n]
+        alpha_n_val = alpha_n[n]
+        phase_fixed = -1j * 2 * np.pi * ((fc_hz + nu_n_val) * tau_n)
+        doppler_term = np.exp(1j * 2 * np.pi * nu_n_val * t)
+        s_shifted = np.zeros_like(t)
+        idx = (t >= tau_n) & (t < tau_n + dt)
+        s_shifted[idx] = 1.0
+        r_t += alpha_n_val * np.exp(phase_fixed) * doppler_term * s_shifted
+    plt.figure(figsize=(10, 6))
+    plt.plot(t, s_tx, 'b-', label='Transmitido')
+    plt.plot(t, np.real(r_t), 'r-', label='Recebido')
+    plt_xlabel = 'Tempo t [s]'
+    plt.ylabel('Amplitude')
+    plt.title(f'Sinais transmitido e recebido para δt = {dt} s, στ = {st_linear[0]:.4e} s')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+# ==============================
+# BANDA DE COERÊNCIA E TEMPO DE COERÊNCIA (estilo programa 1)
+# ==============================
+rho_thresholds = [0.95, 0.90]
+
+# Normalizador
+Omega_c_corr = np.sum(alpha2) if np.sum(alpha2) > 0 else 1.0
+
+# --- Banda de coerência ---
+delta_f = np.logspace(0, 8, 2000)  # [1 Hz, 1e8 Hz]
+
+exp_tau_f = np.exp(-1j * 2 * np.pi * np.outer(tau, delta_f))
+num_f = alpha2 @ exp_tau_f
+rho_f = np.abs(num_f / Omega_c_corr)
+
+Bc_results = {}
+for thr in rho_thresholds:
+    idxs = np.where(rho_f <= thr)[0]
+    if idxs.size == 0:
+        Bc = delta_f[-1]
+        found = False
+    else:
+        Bc = delta_f[idxs[0]]
+        found = True
+    Bc_results[thr] = {'Bc_hz': Bc, 'found': found, 'idx': (idxs[0] if idxs.size>0 else None)}
+
+# Plot estilo programa 1
+plt.figure(figsize=(11,5))
+plt.semilogx(delta_f, rho_f, lw=2)
+plt.ylim([0.2, 1.02])
+plt.xscale('log')
+for thr in rho_thresholds:
+    plt.axhline(thr, color='k', linestyle='--', alpha=0.7)
+    plt.axvline(Bc_results[thr]['Bc_hz'], color='k', linestyle=':', alpha=0.7)
+
+# Título no estilo programa 1
+title_str = (f"B_C(ρB=0.95) = {Bc_results[0.95]['Bc_hz']/1e6:.3f} MHz, "
+             f"B_C(ρB=0.90) = {Bc_results[0.90]['Bc_hz']/1e6:.3f} MHz, "
+             f"σ_τ = {st_linear[0]*1e9:.1f} ns")
+plt.title(title_str, pad=16)
+plt.xlabel("Desvio de Frequência - κ (Hz)")
+plt.ylabel(r"$|\rho_{TT}(\kappa,0)|$")
+plt.grid(True, which="both", linestyle="--", alpha=0.4)
+
+# Anotações verticais (em MHz)
+for thr in rho_thresholds:
+    bc = Bc_results[thr]['Bc_hz']
+    found = Bc_results[thr]['found']
+    txt = f"{bc/1e6:.3f} MHz" + ("" if found else " (>= max varr.)")
+    plt.text(bc, thr - 0.06, txt, rotation=90, verticalalignment='bottom', horizontalalignment='center')
+plt.show()
+
+# Imprime resultados
+for thr in rho_thresholds:
+    rec = Bc_results[thr]
+    if rec['found']:
+        print(f"Banda de Coerência (ρB={thr}): {rec['Bc_hz']/1e6:.6f} MHz")
+    else:
+        print(f"Banda de Coerência (ρB={thr}): >={rec['Bc_hz']/1e6:.6f} MHz (não encontrada dentro da varredura)")
+
+# --- Tempo de coerência ---
+delta_t = np.logspace(-6, 0, 2000)  # [1e-6, 1]
+
+for vrx_scalar in [5, 50]:
+    Vrx = vrx_scalar * np.array([np.cos(theta_v) * np.sin(phi_v),
+                                 np.sin(theta_v) * np.sin(phi_v),
+                                 np.cos(phi_v)])
+    nu_n_v = (1.0 / lambda_c) * np.dot(rn, Vrx)
+
+    exp_nu_t = np.exp(1j * 2 * np.pi * np.outer(nu_n_v, delta_t))
+    num_t = alpha2 @ exp_nu_t
+    rho_t = np.abs(num_t / Omega_c_corr)
+
+    Tc_results = {}
+    for thr in rho_thresholds:
+        idxs = np.where(rho_t <= thr)[0]
+        if idxs.size == 0:
+            Tc = delta_t[-1]
+            found = False
+        else:
+            Tc = delta_t[idxs[0]]
+            found = True
+        Tc_results[thr] = {'Tc_s': Tc, 'found': found, 'idx': (idxs[0] if idxs.size>0 else None)}
+
+    # Plot estilo programa 1
+    plt.figure(figsize=(11,5))
+    plt.semilogx(delta_t, rho_t, lw=2)
+    plt.ylim([0.2, 1.02])
+    plt.xscale('log')
+    for thr in rho_thresholds:
+        plt.axhline(thr, color='k', linestyle='--', alpha=0.7)
+        plt.axvline(Tc_results[thr]['Tc_s'], color='k', linestyle=':', alpha=0.7)
+
+    # Título no estilo programa 1
+    title_time = (f"T_C(ρT=0.95) = {Tc_results[0.95]['Tc_s']*1e3:.3f} ms, "
+                  f"T_C(ρT=0.90) = {Tc_results[0.90]['Tc_s']*1e3:.3f} ms, "
+                  f"max(ν_n) = {np.max(np.abs(nu_n_v)):.1f} Hz, vrx = {vrx_scalar} m/s")
+    plt.title(title_time, pad=16)
+    plt.xlabel("Desvio de Tempo - σ (s)")
+    plt.ylabel(r"$|\rho_{TT}(0,\sigma)|$")
+    plt.grid(True, which="both", linestyle="--", alpha=0.4)
+
+    # Anotações verticais (em ms)
+    for thr in rho_thresholds:
+        tc = Tc_results[thr]['Tc_s']
+        found = Tc_results[thr]['found']
+        txt = f"{tc*1e3:.3f} ms" + ("" if found else " (>= max varr.)")
+        plt.text(tc, thr - 0.06, txt, rotation=90, verticalalignment='bottom', horizontalalignment='center')
+
+    plt.show()
+
+    # Print resultados
+    for thr in rho_thresholds:
+        rec = Tc_results[thr]
+        if rec['found']:
+            print(f"vrx={vrx_scalar} m/s -> Tempo de Coerência (ρT={thr}): {rec['Tc_s']*1e3:.6f} ms")
+        else:
+            print(f"vrx={vrx_scalar} m/s -> Tempo de Coerência (ρT={thr}): >={rec['Tc_s']*1e3:.6f} ms (não encontrada dentro da varredura)")
