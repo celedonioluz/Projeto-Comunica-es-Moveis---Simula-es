@@ -101,31 +101,23 @@ xi = xi[order]
 
 alpha2_pre = np.exp(-tau * ((r_tau - 1) / (r_tau * st_linear))) * 10 ** (-xi / 10)
 
-Omega_c = np.sum(alpha2_pre[1:])
+# ==============================
+# Cenário UMi-NLOS (KR_dB = 0)
+# ==============================
 
-# CORREÇÃO: Para cenário NLOS (KR_dB = 0), usar apenas os componentes NLOS
-if KR_linear == 0:
-    # Cenário NLOS - não há componente LOS
-    alpha2 = alpha2_pre / np.sum(alpha2_pre)  # Normaliza para soma = 1
+# Somente caminhos NLOS: ignorar alpha2_pre[0] (LOS inexistente)
+Omega_c = np.sum(alpha2_pre[1:])  # soma dos caminhos NLOS
+
+# Normaliza apenas os caminhos NLOS para que a soma seja 1
+alpha2 = np.zeros_like(alpha2_pre)
+if Omega_c > 0:
+    alpha2[1:] = alpha2_pre[1:] / Omega_c
 else:
-    # Cenário LOS - incluir componente LOS
-    alpha2 = np.zeros_like(alpha2_pre)
-    alpha2[0] = KR_linear / (KR_linear + 1)
-    nlos_total = 1.0 / (KR_linear + 1)
-    if Omega_c <= 0:
-        alpha2[1:] = nlos_total / (M - 1)
-    else:
-        alpha2[1:] = (alpha2_pre[1:] / Omega_c) * nlos_total
+    # Proteção caso Omega_c seja zero (nunca deve acontecer se M>1)
+    alpha2[1:] = 1.0 / (M - 1)
 
-# Ajuste de resíduo para garantir soma = 1
-resid = 1.0 - np.sum(alpha2)
-if abs(resid) > 1e-12:
-    if np.sum(alpha2[1:]) > 0:
-        alpha2[1:] += resid * (alpha2[1:] / np.sum(alpha2[1:]))
-    else:
-        alpha2[0] += resid
+# alpha2[0] continua zero, pois não há componente LOS
 
-print(f"Soma das potências alpha2 (deve ser 1.0): {np.sum(alpha2):.12f}")
 
 # ==============================
 # CÁLCULO DO KR (linear, normalizado) e KR (dB, normalizado) - COM PROTEÇÃO
@@ -141,19 +133,13 @@ else:
     KR_calc = alpha2[0] / max(np.sum(alpha2[1:]), eps)
     KR_calc_db = 10 * np.log10(max(KR_calc, eps))  # Proteção contra log(0)
 
-print(f"KR (linear, normalizado): {KR_calc:.6f}")
+    print(f"KR (linear, normalizado): {KR_calc:.6f}")
 if KR_calc > 0:
     print(f"KR (dB, normalizado)    : {KR_calc_db:.3f} dB")
 else:
     print(f"KR (dB, normalizado)    : -∞ dB (NLOS)")
 
-# Cálculo do KR (a partir das potências preliminares, sem normalização)
-KR_calc_pre = alpha2_pre[0] / max(np.sum(alpha2_pre[1:]), eps)
-if KR_calc_pre > 0:
-    KR_calc_pre_db = 10 * np.log10(KR_calc_pre)
-    print(f"KR (linear) a partir de alpha2_pre: {KR_calc_pre:.6f}  -> KR (dB): {KR_calc_pre_db:.3f} dB")
-else:
-    print(f"KR (linear) a partir de alpha2_pre: {KR_calc_pre:.6f}  -> KR (dB): -∞ dB")
+
 
 # ==============================
 # Cálculo do atraso médio e σ_τ
@@ -204,6 +190,7 @@ Y = np.random.normal(0, sigma_theta_rad / 7, M)
 theta_n = np.array(U) * theta_p_n + Y
 theta_n_deg = theta_n * 180 / np.pi
 
+# Gráfico do círculo angular azimutal
 plt.figure(figsize=(9, 5))
 plt.title("Espectro Angular - Potência vs Ângulo de Chegada")
 plt.xlabel("Ângulo θn [graus]")
@@ -214,14 +201,23 @@ for ang, p in zip(theta_n_deg, alpha2):
 plt.grid(True, linestyle="--", alpha=0.7)
 plt.show()
 
-# Gráfico do círculo angular azimutal
+# Gráfico do círculo polar angular azimutal (com centro em 1e-8)
 plt.figure(figsize=(6, 6))
 ax = plt.subplot(111, polar=True)
 theta_n_rad = np.deg2rad(theta_n_deg)
+
+# Escala e limites logarítmicos
 ax.set_rscale("log")
+ax.set_rlim(1e-8, 1)
+ax.set_rticks([1e-8, 1e-6, 1e-4, 1e-2, 1])
+ax.set_rlabel_position(45)
+
+# Linhas partindo do centro logarítmico (1e-8)
 for ang, p in zip(theta_n_rad, alpha2):
-    ax.plot([0, ang], [1e-8, p], color="k")
-    ax.plot(ang, p, marker="o", markersize=6, markerfacecolor="white", markeredgecolor="k")
+    ax.plot([ang, ang], [1e-8, p], color="k")
+    ax.plot(ang, p, marker="o", markersize=6,
+            markerfacecolor="white", markeredgecolor="k")
+
 ax.set_title("Círculo Angular - Ângulo Azimutal")
 plt.show()
 
@@ -243,20 +239,31 @@ plt.xlabel("Ângulo de Elevação ϕn [graus]")
 plt.ylabel("Potência α²n (escala log)")
 plt.yscale("log")
 for ang, p in zip(phi_n_deg, alpha2):
+    #plt.stem([ang], [p], linefmt="k-", markerfmt="k^", basefmt=" ")
     plt.stem([ang], [p], linefmt="k-", markerfmt="ko", basefmt=" ")
 plt.grid(True, linestyle="--", alpha=0.7)
 plt.show()
 
-# Gráfico do círculo angular elevação
+# Gráfico do círculo angular de elevação (com centro em 1e-8)
 plt.figure(figsize=(6, 6))
 ax2 = plt.subplot(111, polar=True)
 phi_n_rad = np.deg2rad(phi_n_deg)
+
+# Escala e limites logarítmicos
 ax2.set_rscale("log")
+ax2.set_rlim(1e-8, 1)
+ax2.set_rticks([1e-8, 1e-6, 1e-4, 1e-2, 1])
+ax2.set_rlabel_position(45)
+
+# Linhas partindo do centro logarítmico (1e-8)
 for ang, p in zip(phi_n_rad, alpha2):
-    ax2.plot([0, ang], [1e-8, p], color="k")
-    ax2.plot(ang, p, marker="o", markersize=6, markerfacecolor="white", markeredgecolor="k")
-ax2.set_title("Círculo Angular - Ângulo de Elevação")
+    ax2.plot([ang, ang], [1e-8, p], color="k")
+    ax2.plot(ang, p, marker="o", markersize=6,
+             markerfacecolor="white", markeredgecolor="k")
+
+ax2.set_title("Círculo Angular - Ângulo de Elevação (raio mínimo = 1e-8)")
 plt.show()
+
 
 # ==============================
 # DIREÇÕES DE CHEGADA (rn)
@@ -324,21 +331,31 @@ dts = [1e-7, 1e-5, 1e-3]
 
 for dt in dts:
     t, s_tx = generate_transmitted(0, dt, 100000)
-    r_t = np.zeros_like(t, dtype=complex)
+
+    r_t_complex = np.zeros_like(t, dtype=complex)  # mantém cálculo original
+
     for n in range(M):
-        tau_n = tau[n]
-        nu_n_val = nu_n[n]
-        alpha_n_val = alpha_n[n]
-        phase_fixed = -1j * 2 * np.pi * ((fc_hz + nu_n_val) * tau_n)
+        tau_n_val = tau[n]  # atraso do caminho n
+        nu_n_val = nu_n[n]  # desvio Doppler do caminho n
+        alpha_n_val = alpha_n[n]  # amplitude do caminho n
+
+        phase_fixed = -1j * 2 * np.pi * ((fc_hz + nu_n_val) * tau_n_val)
         doppler_term = np.exp(1j * 2 * np.pi * nu_n_val * t)
+
         s_shifted = np.zeros_like(t)
-        idx = (t >= tau_n) & (t < tau_n + dt)
+        idx = (t >= tau_n_val) & (t < tau_n_val + dt)
         s_shifted[idx] = 1.0
-        r_t += alpha_n_val * np.exp(phase_fixed) * doppler_term * s_shifted
+
+        r_t_complex += alpha_n_val * np.exp(phase_fixed) * doppler_term * s_shifted
+
+    # Módulo do sinal recebido (sempre positivo)
+    r_t = np.abs(r_t_complex)
+
+    # Plot
     plt.figure(figsize=(10, 6))
     plt.plot(t, s_tx, 'b-', label='Transmitido')
-    plt.plot(t, np.real(r_t), 'r-', label='Recebido')
-    plt_xlabel = 'Tempo t [s]'
+    plt.plot(t, r_t, 'r-', label='Recebido (módulo)')
+    plt.xlabel('Tempo t [s]')
     plt.ylabel('Amplitude')
     plt.title(f'Sinais transmitido e recebido para δt = {dt} s, στ = {st_linear[0]:.4e} s')
     plt.legend()
