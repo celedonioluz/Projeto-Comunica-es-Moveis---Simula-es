@@ -1,0 +1,128 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import ncx2
+
+# =============================================
+# CONFIGURAÇÕES GERAIS
+# =============================================
+plt.rcParams['font.family'] = 'Times New Roman'
+plt.rcParams['font.size'] = 12
+
+# =============================================
+# DEFINIÇÃO DOS PARÂMETROS GERAIS
+# =============================================
+gamma_th_dB = np.linspace(-30, 30, 10)
+gamma_bar_s_dB = [-20, 0, 20]
+gamma_bar_s_linear = [10 ** (x / 10) for x in gamma_bar_s_dB]
+gamma_th_linear = 10 ** (gamma_th_dB / 10)
+Namost = 10 ** 6
+K_R = 5
+
+# =============================================
+# Função Q de Marcum
+# =============================================
+def marcumq(a, b, p=1):
+    if p != 1:
+        raise NotImplementedError("Somente ordem p=1 suportada.")
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    return 1 - ncx2.cdf(b**2, df=2, nc=a**2)
+
+
+# =============================================
+# ✅ GRÁFICO 2 — SOMENTE CURVAS RAYLEIGH + SIMULAÇÃO
+# =============================================
+plt.figure(figsize=(10, 8))
+colors_common = ['blue', 'red', 'orange']
+
+for i, (gamma_bar_dB, gamma_bar_lin) in enumerate(zip(gamma_bar_s_dB, gamma_bar_s_linear)):
+    gamma_th_dB_smooth = np.linspace(-30, 30, 400)
+    gamma_th_linear_smooth = 10 ** (gamma_th_dB_smooth / 10)
+    Pout_rayleigh = 1 - np.exp(-gamma_th_linear_smooth / gamma_bar_lin)
+
+    plt.semilogy(gamma_th_dB_smooth, Pout_rayleigh,
+                 color=colors_common[i], linestyle='-',
+                 linewidth=2,
+                 label=r'Rayleigh - $\bar{\gamma}_{s}$ = ' + f'{gamma_bar_dB} dB')
+
+    # --- Simulação Monte Carlo Rayleigh (MODIFICADO)
+    Pout_simulated_rayleigh = []
+    for gamma_th_lin in gamma_th_linear:
+
+        h_real = np.random.normal(0, np.sqrt(1/2), Namost)
+        h_imag = np.random.normal(0, np.sqrt(1/2), Namost)
+        beta = np.sqrt(h_real**2 + h_imag**2)
+
+        gamma_s = gamma_bar_lin * beta ** 2
+        Ns = np.sum(gamma_s <= gamma_th_lin)
+        Pout_simulated_rayleigh.append(Ns / Namost)
+
+    plt.semilogy(gamma_th_dB, Pout_simulated_rayleigh,
+                 color='black', marker='+', markersize=8,
+                 markeredgewidth=1.5, linestyle='', alpha=0.9)
+
+plt.xlabel(r'Limiar de SNR - $\gamma_{th}$ (dB)', fontsize=14)
+plt.ylabel('OP', fontsize=14)
+plt.title('Curvas Rayleigh', fontsize=16)
+plt.ylim(1e-5, 1)
+plt.xlim(-30, 30)
+plt.grid(True, which='both', linestyle='--', alpha=0.3)
+
+handles, labels = plt.gca().get_legend_handles_labels()
+handles.append(plt.Line2D([], [], color='black', marker='+', markersize=8,
+                          markeredgewidth=1.5, linestyle='', label='Sim'))
+labels.append('Sim')
+
+plt.legend(handles, labels, loc='lower right', fontsize=9)
+plt.tight_layout()
+plt.show()
+
+# =============================================
+# GRÁFICOS 3–5 (RICE)
+# =============================================
+for K_R_temp in [0.1, 1, 10]:
+    plt.figure(figsize=(10, 8))
+    for i, (gamma_bar_dB, gamma_bar_lin) in enumerate(zip(gamma_bar_s_dB, gamma_bar_s_linear)):
+        gamma_th_dB_smooth = np.linspace(-30, 30, 400)
+        gamma_th_linear_smooth = 10 ** (gamma_th_dB_smooth / 10)
+
+        Pout_rice = 1 - marcumq(np.sqrt(2 * K_R_temp),
+                                np.sqrt((2 * (K_R_temp + 1) * gamma_th_linear_smooth) / gamma_bar_lin))
+
+        label_text = r'Rice (K$_R$=' + f'{K_R_temp}) - ' + r'$\bar{\gamma}_{s}$ = ' + f'{gamma_bar_dB} dB'
+        plt.semilogy(gamma_th_dB_smooth, Pout_rice,
+                     color=colors_common[i], linestyle='--',
+                     linewidth=2,
+                     label=label_text)
+
+        # --- Simulação Monte Carlo Rice
+        Pout_simulated_rice = []
+        for gamma_th_lin in gamma_th_linear:
+            sigma = 1 / np.sqrt(2 * (K_R_temp + 1))
+            mu = np.sqrt(K_R_temp / (K_R_temp + 1))
+            h_real = np.random.normal(mu, sigma, Namost)
+            h_imag = np.random.normal(0, sigma, Namost)
+            beta = np.sqrt(h_real ** 2 + h_imag ** 2)
+            gamma_s = gamma_bar_lin * (beta ** 2)
+            Ns = np.sum(gamma_s <= gamma_th_lin)
+            Pout_simulated_rice.append(Ns / Namost)
+
+        plt.semilogy(gamma_th_dB, Pout_simulated_rice,
+                     color='black', marker='+', markersize=8,
+                     markeredgewidth=1.5, linestyle='', alpha=0.9)
+
+    plt.xlabel(r'Limiar de SNR - $\gamma_{th}$ (dB)', fontsize=14)
+    plt.ylabel('OP', fontsize=14)
+    plt.title(f'Curvas Rice (K_R={K_R_temp})', fontsize=16)
+    plt.ylim(1e-5, 1)
+    plt.xlim(-30, 30)
+    plt.grid(True, which='both', linestyle='--', alpha=0.3)
+
+    handles, labels = plt.gca().get_legend_handles_labels()
+    handles.append(plt.Line2D([], [], color='black', marker='+', markersize=8,
+                              markeredgewidth=1.5, linestyle='', label='Sim'))
+    labels.append('Sim')
+
+    plt.legend(handles, labels, loc='lower right', fontsize=9)
+    plt.tight_layout()
+    plt.show()
