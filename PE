@@ -1,0 +1,147 @@
+#Simulação SEP (SER) M-QAM: AWGN (teórica + Monte Carlo) e Rayleigh (teórica + Monte Carlo)
+# Requisitos: numpy, scipy, matplotlib, tqdm (opcional)
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.special import erfc
+from tqdm import tqdm 
+
+# ============================
+# CONFIGURAÇÕES PARA FICAR IGUAL À SEGUNDA FIGURA
+# ============================
+plt.rcParams['font.family'] = 'serif'
+plt.rcParams['mathtext.fontset'] = 'cm'      # Estilo LaTeX
+plt.rcParams['font.size'] = 18
+plt.rcParams['axes.labelsize'] = 20
+plt.rcParams['axes.titlesize'] = 22
+plt.rcParams['legend.fontsize'] = 16
+plt.rcParams['xtick.labelsize'] = 16
+plt.rcParams['ytick.labelsize'] = 16
+# ============================
+
+# -----------------------
+# Funções auxiliares
+# -----------------------
+def Q(x):
+    return 0.5 * erfc(x / np.sqrt(2.0))
+
+def Pe_AWGN_MQAM(M, gamma_s):
+    a = 1 - 1.0/np.sqrt(M)
+    arg = np.sqrt(3.0 * gamma_s / (M - 1.0))
+    Qval = Q(arg)
+    return 4.0 * a * Qval - 4.0 * a**2 * (Qval**2)
+
+# ===============================
+# FUNÇÃO TEÓRICA RAYLEIGH
+# ===============================
+def Pe_Rayleigh_theoretical_CM(M, gamma_s_bar):
+    C_M = np.sqrt(1.5 * gamma_s_bar / (M - 1 + 1.5 * gamma_s_bar))
+
+    A = (np.sqrt(M) - 1) / np.sqrt(M)
+
+    Pe = 2 * A * (1 - C_M) \
+         - (A**2) * (1 - (4/np.pi) * C_M * np.arctan(1 / C_M))
+
+    return Pe
+
+# -----------------------
+# Parâmetros Gerais de Simulação
+# -----------------------
+np.random.seed(0)
+Nt = int(1e5)
+
+SNR_dB_list = np.arange(-5, 31, 1)
+
+M_list = [4, 16, 64]
+Es = 1.0
+
+# -----------------------
+# Preparar plots: um gráfico por M
+# -----------------------
+for M in M_list:
+    SER_awgn_mc = []
+    SER_ray_mc = []
+    SER_awgn_theo = []
+    SER_ray_theo = []
+
+    m_side = int(np.sqrt(M))
+    re = np.arange(-(m_side-1), m_side, 2)
+    im = np.arange(-(m_side-1), m_side, 2)
+    constellation = (np.array([x + 1j*y for y in im for x in re]))
+    constellation = constellation / np.sqrt(np.mean(np.abs(constellation)**2) / Es)
+
+    # loop SNR
+    for SNR_dB in tqdm(SNR_dB_list, desc=f"M={M}"):
+        gamma_s = 10**(SNR_dB/10.0)
+
+        # Teórica AWGN
+        SER_awgn_theo.append(Pe_AWGN_MQAM(M, gamma_s))
+
+        # ===============================
+        # Teórica Rayleigh
+        # ===============================
+        SER_ray_theo.append(Pe_Rayleigh_theoretical_CM(M, gamma_s))
+
+        # AWGN MONTE CARLO
+        sigma2_comp = 1.0 / (2.0 * gamma_s)
+        sigma_comp = np.sqrt(sigma2_comp)
+
+        # símbolo transmitido
+        symbol_idx = np.random.randint(0, M, Nt)
+        s = constellation[symbol_idx]
+
+        # ruído AWGN gaussiano complexo
+        n_awgn = sigma_comp * (np.random.randn(Nt) + 1j*np.random.randn(Nt))
+
+        # canal AWGN puro
+        r_awgn = s + n_awgn
+
+        # regra ML
+        dist2 = np.abs(r_awgn[:, None] - constellation[None, :])**2
+        idx_hat_awgn = np.argmin(dist2, axis=1)
+        Ne_awgn = np.count_nonzero(idx_hat_awgn != symbol_idx)
+        SER_awgn_mc.append(Ne_awgn / Nt)
+
+        # RAYLEIGH MONTE CARLO (com β)
+        beta = (np.random.randn(Nt) + 1j*np.random.randn(Nt)) / np.sqrt(2.0)
+
+        n_ray = sigma_comp * (np.random.randn(Nt) + 1j*np.random.randn(Nt))
+        r_ray = beta * s + n_ray
+
+        dist2_ray = np.abs(r_ray[:, None] - beta[:, None] * constellation[None, :])**2
+        idx_hat_ray = np.argmin(dist2_ray, axis=1)
+        Ne_ray = np.count_nonzero(idx_hat_ray != symbol_idx)
+        SER_ray_mc.append(Ne_ray / Nt)
+
+    # -----------------------
+    # Plot resultados
+    # -----------------------
+    plt.figure(figsize=(14, 6))
+
+    plt.semilogy(SNR_dB_list, SER_awgn_theo, '-', color='blue',
+                 label='SEP AWGN - Teórica', linewidth=2)
+    plt.semilogy(SNR_dB_list, SER_ray_theo, '--', color='blue',
+                 label='SEP Rayleigh - Teórica '
+                       '', linewidth=2)
+
+    plt.semilogy(SNR_dB_list, SER_awgn_mc, linestyle='None', marker='+',
+                 markeredgecolor='black', markeredgewidth=2,
+                 label='Simulação AWGN')
+
+    plt.semilogy(SNR_dB_list, SER_ray_mc, linestyle='None', marker='o',
+                 markerfacecolor='none', markeredgecolor='black',
+                 markeredgewidth=2, label='Simulação Rayleigh')
+
+    plt.xlabel(r'SNR Média por Símbolo – $\bar{\gamma}_s$')
+    plt.ylabel('Probabilidade de Erro')
+
+    plt.title(f'SEP e SER, {M}-QAM')
+
+    plt.grid(True, which='both', linestyle='--', alpha=0.6)
+
+    plt.legend(loc='lower left')
+
+    plt.ylim(1e-6, 1.0)
+    plt.yticks([1e0, 1e-2, 1e-4, 1e-6], [r'$10^{0}$', r'$10^{-2}$', r'$10^{-4}$', r'$10^{-6}$'])
+
+    plt.xlim(-5, 30)
+    plt.show()
