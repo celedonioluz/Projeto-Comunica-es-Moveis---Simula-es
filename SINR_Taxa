@@ -1,0 +1,211 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# -------------------------
+# Parâmetros  Gerais Fornecidos
+# -------------------------
+c = 3e8
+k0 = 1.381e-23
+
+fc = 3.0e9
+Bw = 20e6
+Fn_dB = 9.0
+Fn = 10**(Fn_dB/10)
+hAP = 15.0
+hUE = 1.65
+T = 296.15
+Lx = 1000.0
+Ly = 1000.0
+
+Ncf = 300
+Nbc = 100
+tau_p = 50
+Pp = 0.200
+Pd = 0.200
+
+sigma_w2 = k0 * T * Bw * Fn
+print("sigma_w2 (W) =", sigma_w2)
+
+# Cenários
+M_list = [100, 150, 200]
+K_fixed_sit1 = 20
+M_fixed_sit2 = 100
+K_list = [10, 20, 30]
+
+PL_1m = 20 * np.log10(4 * np.pi * fc / c)
+shadow_sigma_db = 8.0
+pathloss_exponent_db = 28.0
+
+rng = np.random.default_rng(12345)
+
+# -------------------------
+# Funções utilitárias
+# -------------------------
+def generate_positions(M, K):
+    x_AP = rng.uniform(-Lx/2, Lx/2, size=M)
+    y_AP = rng.uniform(-Ly/2, Ly/2, size=M)
+    p_AP = np.vstack([x_AP, y_AP, np.full(M, hAP)]).T
+    x_UE = rng.uniform(-Lx/2, Lx/2, size=K)
+    y_UE = rng.uniform(-Ly/2, Ly/2, size=K)
+    p_UE = np.vstack([x_UE, y_UE, np.full(K, hUE)]).T
+    return p_AP, p_UE
+
+def distances(p_AP, p_UE):
+    diff = p_AP[:, None, :] - p_UE[None, :, :]
+    return np.linalg.norm(diff, axis=2)
+
+def large_scale_gain(d):
+    d_clipped = np.maximum(d, 1.0)
+    shadow = rng.normal(0.0, shadow_sigma_db, size=d_clipped.shape)
+    Omega_dB = PL_1m + pathloss_exponent_db * np.log10(d_clipped) + shadow
+    return 10**(-Omega_dB/10.0), Omega_dB
+
+def small_scale_rayleigh(M, K):
+    real = rng.normal(0.0, np.sqrt(1/2), size=(M,K))
+    imag = rng.normal(0.0, np.sqrt(1/2), size=(M,K))
+    return real + 1j*imag
+
+def ecdf(data):
+    data = np.sort(data)
+    y = np.arange(1, len(data)+1) / len(data)
+    return data, y
+
+# -------------------------
+# Implementação literal das SUAS fórmulas
+# -------------------------
+def simulate_user_formula(M, K, Ncf=Ncf, Nbc=Nbc):
+    sinr_inst_all = []
+    sinr_stat_all = []
+    rate_inst_all = []
+    rate_stat_all = []
+
+    c_coef = 1.0 / np.sqrt(tau_p * Pp)
+
+    for _ in range(Ncf):
+
+        p_AP, p_UE = generate_positions(M, K)
+        d = distances(p_AP, p_UE)
+        Omega_lin, _ = large_scale_gain(d)
+
+        gamma = np.sqrt(Pd * tau_p) * Omega_lin * c_coef
+        eta = 1.0 / np.sum(gamma, axis=1)
+        eta = np.repeat(eta[:,None], K, axis=1)
+
+        numer_stat = Pd * (np.sum(np.sqrt(eta) * gamma, axis=0))**2
+        sum_eta_gamma = np.sum(eta * gamma, axis=1)
+        denom_stat = Pd * np.sum(Omega_lin * sum_eta_gamma[:,None], axis=0) + sigma_w2
+        sinr_stat = numer_stat / denom_stat
+
+        sinr_stat_all.extend(sinr_stat)
+        rate_stat_all.extend(np.log2(1 + sinr_stat))
+
+        for _ in range(Nbc):
+            h = small_scale_rayleigh(M, K)
+            g = np.sqrt(Omega_lin) * h
+
+            v = (rng.normal(0,np.sqrt(sigma_w2/2),(M,K)) +
+                 1j*rng.normal(0,np.sqrt(sigma_w2/2),(M,K)))
+
+            g_hat = g + v / np.sqrt(tau_p * Pp)
+
+            sinr_k = np.zeros(K)
+            for k in range(K):
+                num = Pd * np.abs(np.sum(np.sqrt(eta[:,k])*g[:,k]*np.conj(g_hat[:,k])))**2
+
+                interf = 0
+                for kp in range(K):
+                    if kp != k:
+                        interf += np.abs(np.sum(np.sqrt(eta[:,kp])*g[:,k]*np.conj(g_hat[:,kp])))**2
+
+                sinr_k[k] = num / (Pd * interf + sigma_w2)
+
+            sinr_inst_all.extend(sinr_k)
+            rate_inst_all.extend(np.log2(1 + sinr_k))
+
+    return {
+        'sinr_inst': np.array(sinr_inst_all),
+        'sinr_stat': np.array(sinr_stat_all),
+        'rate_inst': np.array(rate_inst_all),
+        'rate_stat': np.array(rate_stat_all)
+    }
+
+# -------------------------
+# SIMULAÇÕES
+# -------------------------
+results_sit1 = {}
+for M in M_list:
+    print(f"Situação I: M={M}, K=20")
+    results_sit1[M] = simulate_user_formula(M, K_fixed_sit1)
+
+results_sit2 = {}
+for K in K_list:
+    print(f"Situação II: M=100, K={K}")
+    results_sit2[K] = simulate_user_formula(M_fixed_sit2, K)
+
+# =======================
+# GRÁFICO 1 — SINR (Sit I)
+# =======================
+plt.figure()
+for M, c in zip([100,150,200], ['tab:blue','tab:red','goldenrod']):
+    x,y = ecdf(10*np.log10(results_sit1[M]['sinr_stat']+1e-12))
+    plt.plot(x,y,'--',color=c,label=f'ECSI - M = {M}')
+    x,y = ecdf(10*np.log10(results_sit1[M]['sinr_inst']+1e-12))
+    plt.plot(x,y,'-',color=c,label=f'PCSI - M = {M}')
+plt.xlabel('SINR (dB)')
+plt.ylabel('ECDF')
+plt.xlim([-10,30])
+plt.ylim([0,1])
+plt.grid()
+plt.legend(loc='lower right')   # <<< ALTERAÇÃO SOLICITADA
+plt.show()
+
+# =======================
+# GRÁFICO 2 — TAXA (Sit I)
+# =======================
+plt.figure()
+for M, c in zip([100,150,200], ['tab:blue','tab:red','goldenrod']):
+    x,y = ecdf(Bw * results_sit1[M]['rate_stat'] / 1e6)
+    plt.plot(x,y,'--',color=c,label=f'ECSI - M = {M}')
+    x,y = ecdf(Bw * results_sit1[M]['rate_inst'] / 1e6)
+    plt.plot(x,y,'-',color=c,label=f'PCSI - M = {M}')
+plt.xlabel('Taxa Alcançável (Mbits/s)')
+plt.ylabel('ECDF')
+plt.xlim([0,150])
+plt.ylim([0,1])
+plt.grid()
+plt.legend()
+plt.show()
+
+# =======================
+# GRÁFICO 3 — SINR (Sit II)
+# =======================
+plt.figure()
+for K, c in zip([10,20,30], ['tab:blue','tab:red','goldenrod']):
+    x,y = ecdf(10*np.log10(results_sit2[K]['sinr_stat']+1e-12))
+    plt.plot(x,y,'--',color=c,label=f'ECSI - K = {K}')
+    x,y = ecdf(10*np.log10(results_sit2[K]['sinr_inst']+1e-12))
+    plt.plot(x,y,'-',color=c,label=f'PCSI - K = {K}')
+plt.xlabel('SINR (dB)')
+plt.ylabel('ECDF')
+plt.xlim([-10,30])
+plt.ylim([0,1])
+plt.grid()
+plt.legend(loc='lower right')   # <<< ALTERAÇÃO SOLICITADA
+plt.show()
+
+# =======================
+# GRÁFICO 4 — TAXA (Sit II)
+# =======================
+plt.figure()
+for K, c in zip([10,20,30], ['tab:blue','tab:red','goldenrod']):
+    x,y = ecdf(Bw * results_sit2[K]['rate_stat'] / 1e6)
+    plt.plot(x,y,'--',color=c,label=f'ECSI - K = {K}')
+    x,y = ecdf(Bw * results_sit2[K]['rate_inst'] / 1e6)
+    plt.plot(x,y,'-',color=c,label=f'PCSI - K = {K}')
+plt.xlabel('Taxa Alcançável (Mbits/s)')
+plt.ylabel('ECDF')
+plt.xlim([0,150])
+plt.ylim([0,1])
+plt.grid()
+plt.legend()
+plt.show()
