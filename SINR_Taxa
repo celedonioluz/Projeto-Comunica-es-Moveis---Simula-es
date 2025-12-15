@@ -71,7 +71,7 @@ def ecdf(data):
     return data, y
 
 # -------------------------
-# Implementação literal das SUAS fórmulas
+# Implementação das Equações
 # -------------------------
 def simulate_user_formula(M, K, Ncf=Ncf, Nbc=Nbc):
     sinr_inst_all = []
